@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include "api/dataflow/dataflow_api.h"
+#include "tt-metalium/constants.hpp"
 #include "experimental/kernel_args.h"
 #include "ttnn/kernel/dataflow/generate_bcast_scalar_metal2.hpp"
 #include "ttnn/operations/normalization/kernel_util/generic/blocked_range.h"
