@@ -98,9 +98,8 @@ void kernel_main() {
     // The MUX CT args start after stats_args.
     constexpr auto stats_args_skip = TensorAccessorArgs<joint_out_args.next_compile_time_args_offset()>();
 
-    using ReduceAuxiliary = ttnn::kernel_lib::ReduceAuxiliaryArgs<stats_args_skip.next_compile_time_args_offset()>;
-
 #ifdef USE_MUX
+    using ReduceAuxiliary = ttnn::kernel_lib::ReduceAuxiliaryArgs<stats_args_skip.next_compile_time_args_offset()>;
     constexpr uint32_t mux_ct_base = ReduceAuxiliary::next_compile_time_args_offset();
     constexpr uint8_t fabric_mux_num_buffers_per_channel = get_compile_time_arg_val(mux_ct_base + 0);
     constexpr size_t fabric_mux_channel_buffer_size_bytes = get_compile_time_arg_val(mux_ct_base + 1);
