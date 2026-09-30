@@ -75,6 +75,10 @@ struct MeshPartitionDeviceOperation {
 
     // Create the output tensors based on the operation attributes and tensor args
     static tensor_return_value_t create_output_tensors(const operation_attributes_t&, const tensor_args_t&);
+
+    // Label the output Shard{dim} along the partitioned mesh axis (the union default would keep the input's label).
+    static std::vector<tt::tt_metal::TensorTopology> compute_output_topologies(
+        const operation_attributes_t&, const tensor_args_t&);
 };
 
 namespace detail {
