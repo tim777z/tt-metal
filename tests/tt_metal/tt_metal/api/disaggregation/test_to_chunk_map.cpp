@@ -153,6 +153,7 @@ TEST(ToChunkMap, CPU_MlaShardMatchesMigrationReference) {
             Shape{num_slots, static_cast<uint32_t>(F), max_seq_len}, Shape{1, static_cast<uint32_t>(F), kTileLocal})};
     spec.temporal = temporal::Dense{};
     spec.addressing = AddressingMode::Slot;
+    spec.arch = tt::ARCH::BLACKHOLE;  // 8 DRAM banks + the OPTIMAL order derive from this
 
     // seq axis + feature width are derived from the tensor's NdShardSpec.
     EXPECT_EQ(spec.sequence_axis().value(), 2u);
@@ -172,7 +173,7 @@ TEST(ToChunkMap, CPU_MlaShardMatchesMigrationReference) {
     CacheConfig config{.spec = spec, .topology = topology, .policy = policy, .base_addr = base};
     MapGeometry geom{.num_layers = 1, .num_slots = num_slots, .max_seq_len = max_seq_len, .position_step = chunk_n_tokens};
 
-    auto table = to_chunk_map({config}, kNumBanks, tt::tt_fabric::MeshId{0}, geom);
+    auto table = to_chunk_map({config}, tt::tt_fabric::MeshId{0}, geom);
 
     uint32_t checked = 0;
     for (uint32_t slot = 0; slot < num_slots; ++slot) {
@@ -218,6 +219,7 @@ TEST(ToChunkMap, CPU_GqaCyclicMatchesReference) {
             Shape{1, 1, kTileLocal, static_cast<uint32_t>(head_dim)})};
     spec.temporal = temporal::Dense{};
     spec.addressing = AddressingMode::Slot;
+    spec.arch = tt::ARCH::BLACKHOLE;  // 8 DRAM banks + the OPTIMAL order derive from this
 
     EXPECT_EQ(spec.sequence_axis().value(), 2u);
     EXPECT_EQ(feature_width(spec.tensor), head_dim);
@@ -236,7 +238,7 @@ TEST(ToChunkMap, CPU_GqaCyclicMatchesReference) {
     CacheConfig config{.spec = spec, .topology = topology, .policy = policy, .base_addr = base};
     MapGeometry geom{.num_layers = 1, .num_slots = num_slots, .max_seq_len = max_seq_len, .position_step = kTileLocal};
 
-    auto table = to_chunk_map({config}, kNumBanks, tt::tt_fabric::MeshId{0}, geom);
+    auto table = to_chunk_map({config}, tt::tt_fabric::MeshId{0}, geom);
 
     const bool cyclic = true;
     uint32_t checked = 0;

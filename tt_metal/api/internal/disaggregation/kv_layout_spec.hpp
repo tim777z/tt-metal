@@ -7,11 +7,13 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <variant>
 #include <vector>
 
 #include <tt-metalium/tensor/spec/tensor_spec.hpp>
 #include <tt_stl/strong_type.hpp>
+#include <umd/device/types/arch.hpp>
 
 namespace tt::tt_metal::internal::disaggregation {
 
@@ -130,6 +132,11 @@ struct KvLayoutSpec {
     // Slot-direct vs paged (block-table) indirection (part 2).
     AddressingMode addressing = AddressingMode::Slot;
 
+    // Target architecture. The arch-specific layout constants — the DRAM bank count and the OPTIMAL
+    // NOC-local bank-order permutation — derive from this (see num_dram_banks / optimal_bank_order);
+    // they are read from the SoC arch descriptor, not hardcoded per call.
+    tt::ARCH arch = tt::ARCH::Invalid;
+
     // Whether this tensor has a per-token sequence axis — read from `temporal`, not stored.
     bool has_sequence() const {
         return !std::holds_alternative<temporal::Rolling>(temporal) &&
@@ -227,5 +234,14 @@ uint32_t chunk_size_bytes(const TensorSpec& tensor, uint32_t tokens_per_chunk);
 // axes that span their full logical extent (the seq axis is tiled at the token block; batch/head axes
 // have granule 1; only the feature axes are full-width).
 uint64_t feature_width(const TensorSpec& tensor);
+
+// DRAM bank count for an arch — mirrors the DRAM channel count in the SoC arch descriptor
+// (umd .../soc_descs/*.yaml). BLACKHOLE=8, WORMHOLE_B0=6; other archs TT_THROW until their descriptor
+// value is added. Replaces threading num_dram_banks through every call: it is an arch fact.
+uint32_t num_dram_banks(tt::ARCH arch);
+
+// The OPTIMAL NOC-local DRAM bank-order permutation for an arch (index i -> physical bank id).
+// Currently only BLACKHOLE is encoded; other archs TT_THROW until their NOC ordering is added.
+std::span<const uint32_t> optimal_bank_order(tt::ARCH arch);
 
 }  // namespace tt::tt_metal::internal::disaggregation

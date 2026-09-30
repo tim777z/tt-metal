@@ -37,12 +37,33 @@ struct Derived {
     std::optional<uint32_t> head_axis;  // tensor axis a non-seq mesh axis shards (GQA head)
     uint32_t n_heads = 1;
     uint32_t num_banks = kNumDramBanks;
+    std::vector<uint32_t> banks;        // resolved bank permutation (arch + bank_order), size num_banks
 };
 
-Derived derive(const CacheConfig& config, uint32_t num_dram_banks) {
+// The active bank ordering resolved for the cache's arch: the OPTIMAL permutation or the identity
+// round-robin, sized to the arch's DRAM bank count (both arch facts, via num_dram_banks/optimal_bank_order).
+std::vector<uint32_t> bank_table(tt::ARCH arch, BankOrder order) {
+    const uint32_t n = num_dram_banks(arch);
+    std::vector<uint32_t> banks(n);
+    if (order == BankOrder::Optimal) {
+        const auto opt = optimal_bank_order(arch);
+        TT_FATAL(opt.size() >= n, "optimal_bank_order has fewer entries ({}) than DRAM banks ({})", opt.size(), n);
+        for (uint32_t i = 0; i < n; ++i) {
+            banks[i] = opt[i];
+        }
+    } else {
+        for (uint32_t i = 0; i < n; ++i) {
+            banks[i] = i;
+        }
+    }
+    return banks;
+}
+
+Derived derive(const CacheConfig& config) {
     Derived d;
-    d.num_banks = num_dram_banks;
     const KvLayoutSpec& spec = config.spec;
+    d.num_banks = num_dram_banks(spec.arch);
+    d.banks = bank_table(spec.arch, config.policy.bank_order);
     const auto& shape = spec.tensor.logical_shape();
 
     const std::optional<uint32_t> seq = spec.sequence_axis();
@@ -82,19 +103,6 @@ struct Located {
     std::vector<std::pair<uint32_t, uint32_t>> coords;  // (row, col) mesh coordinates
 };
 
-// The active bank ordering: the OPTIMAL permutation, or the identity round-robin.
-std::array<uint32_t, kNumDramBanks> bank_table(BankOrder order) {
-    std::array<uint32_t, kNumDramBanks> banks{};
-    if (order == BankOrder::Optimal) {
-        banks = kOptimalDramBankOrder;
-    } else {
-        for (uint32_t i = 0; i < kNumDramBanks; ++i) {
-            banks[i] = i;
-        }
-    }
-    return banks;
-}
-
 // MLA CP ownership: round-robin over sp devices with a per-device chunk stride.
 std::pair<uint32_t, uint32_t> cp_mla_stride(const Derived& d, const GenerationPolicy& policy, uint32_t position, uint32_t dcs) {
     const uint32_t sp_dim = d.sp_dim;
@@ -130,7 +138,7 @@ Located locate_one(
     const uint32_t tpc = d.tpc;
     const uint32_t kcs = policy.k_chunk_size.get();
     const BankScheme scheme = policy.bank_scheme;
-    const auto banks = bank_table(policy.bank_order);
+    const auto& banks = d.banks;
 
     const uint64_t f = d.f;
     const uint32_t sp_dim = d.sp_dim;
@@ -252,10 +260,11 @@ Located locate_one(
         const uint64_t off = base + static_cast<uint64_t>(page_id / d.num_banks) * csb + in_page_offset;
         return {bank_id, off, {{owner, 0u}}};
     }
-    // OPTIMAL indexer: fixed permutation over num_blocks; per-bank slot stacking (ND-shard).
+    // OPTIMAL indexer: fixed permutation over num_blocks; per-bank slot stacking (ND-shard). `banks` is
+    // the OPTIMAL perm here (this branch is the bank_order == Optimal case).
     const uint32_t nblk = policy.num_blocks;
     const uint32_t chunk_idx = local_pos / tpc_page;
-    const uint32_t bank_id = kOptimalDramBankOrder[chunk_idx % nblk];
+    const uint32_t bank_id = banks[chunk_idx % nblk];
     const uint32_t within_bank = chunk_idx / nblk;
     const uint32_t slot_size_b = (per_dev_seq / tpc_page * csb) / nblk;
     const uint32_t eff_slot = geom.num_slots > 1 ? slot : 0;
@@ -272,7 +281,6 @@ FabricNodeId to_fabric_node(tt::tt_fabric::MeshId mesh_id, uint32_t row, uint32_
 
 KvChunkAddressTable to_chunk_map(
     const std::vector<CacheConfig>& configs,
-    uint32_t num_dram_banks,
     tt::tt_fabric::MeshId mesh_id,
     const MapGeometry& geometry) {
     TT_FATAL(!configs.empty(), "to_chunk_map requires at least one cache config");
@@ -281,7 +289,7 @@ KvChunkAddressTable to_chunk_map(
     derived.reserve(configs.size());
     std::vector<KvChunkAddressTableConfig> table_configs;
     for (const auto& config : configs) {
-        const Derived d = derive(config, num_dram_banks);
+        const Derived d = derive(config);
         derived.push_back(d);
         table_configs.push_back(KvChunkAddressTableConfig{
             .num_layers = geometry.num_layers,

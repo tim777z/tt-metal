@@ -89,5 +89,17 @@ TEST(KvLayoutSpec, CPU_AddressingSupportsBothSlotAndPaged) {
     EXPECT_NE(AddressingMode::Slot, AddressingMode::Paged);
 }
 
+// --- arch: the layout's target, and the source of the DRAM bank count / OPTIMAL order ---
+
+TEST(KvLayoutSpec, CPU_ArchDrivesDramBankCount) {
+    KvLayoutSpec spec{.tensor = dummy_tensor(), .temporal = temporal::Dense{}};
+    EXPECT_EQ(spec.arch, tt::ARCH::Invalid);  // must be set explicitly per layout
+
+    // Bank count + OPTIMAL order are arch facts (mirroring the SoC descriptor), not per-call params.
+    EXPECT_EQ(num_dram_banks(tt::ARCH::BLACKHOLE), 8u);
+    EXPECT_EQ(num_dram_banks(tt::ARCH::WORMHOLE_B0), 6u);
+    EXPECT_EQ(optimal_bank_order(tt::ARCH::BLACKHOLE).size(), 8u);
+}
+
 }  // namespace
 }  // namespace tt::tt_metal::internal::disaggregation

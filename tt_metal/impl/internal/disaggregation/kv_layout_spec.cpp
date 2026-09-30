@@ -61,4 +61,23 @@ uint32_t chunk_size_bytes(const TensorSpec& tensor, uint32_t tokens_per_chunk) {
     return static_cast<uint32_t>(tokens_per_chunk * f * kBf16Bytes);
 }
 
+uint32_t num_dram_banks(tt::ARCH arch) {
+    // Mirrors the DRAM channel count in the SoC arch descriptor (umd .../soc_descs/*.yaml): the `dram:`
+    // block lists 8 channels for Blackhole and 6 for Wormhole B0. (SocDescriptor::get_num_dram_channels()
+    // is the live equivalent, but it needs a SocArchDescriptor loaded from yaml — not host-constructible
+    // from a bare ARCH without pulling driver/cluster deps into the addresser, so we key off the arch.)
+    switch (arch) {
+        case tt::ARCH::BLACKHOLE: return 8;
+        case tt::ARCH::WORMHOLE_B0: return 6;
+        default: TT_THROW("num_dram_banks: no DRAM bank count encoded for arch {}", static_cast<int>(arch));
+    }
+}
+
+std::span<const uint32_t> optimal_bank_order(tt::ARCH arch) {
+    switch (arch) {
+        case tt::ARCH::BLACKHOLE: return kOptimalDramBankOrder;
+        default: TT_THROW("optimal_bank_order: no NOC-local bank order encoded for arch {}", static_cast<int>(arch));
+    }
+}
+
 }  // namespace tt::tt_metal::internal::disaggregation

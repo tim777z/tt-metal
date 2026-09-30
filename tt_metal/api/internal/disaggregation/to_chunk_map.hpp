@@ -28,7 +28,8 @@ struct MapGeometry {
 // One co-resident cache to address: the residence-agnostic spec, the mesh distribution the tensor was
 // allocated with (TensorTopology), the op/engine generation policy, and the allocated buffer address.
 // The addresser reads shape/dtype/shard-spec off `spec.tensor`, the mesh geometry + device coords off
-// `topology`, `num_banks`/`mesh_id` from the call args, and everything else from `policy`.
+// `topology`, the DRAM bank count + bank order off `spec.arch` (num_dram_banks / optimal_bank_order),
+// `mesh_id` from the call args, and everything else from `policy`.
 struct CacheConfig {
     KvLayoutSpec spec;
     TensorTopology topology;
@@ -46,7 +47,6 @@ struct CacheConfig {
 // heads and slots share one flat slot axis: config slot = head * num_slots + slot.
 KvChunkAddressTable to_chunk_map(
     const std::vector<CacheConfig>& configs,
-    uint32_t num_dram_banks,
     tt::tt_fabric::MeshId mesh_id,
     const MapGeometry& geometry);
 
