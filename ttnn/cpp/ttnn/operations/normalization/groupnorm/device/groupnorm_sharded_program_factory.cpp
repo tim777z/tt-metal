@@ -7,6 +7,7 @@
 #include "groupnorm_reduce_plans.hpp"
 
 #include <bit>
+#include <cmath>
 #include <map>
 #include <string>
 #include <optional>
@@ -331,20 +332,27 @@ tt::tt_metal::ProgramDescriptor GroupNormDeviceOperation::GroupNormShardedProgra
         get_compute_kernel_config_args(device->arch(), compute_kernel_config);
     const float reduce_divisor = static_cast<float>(num_rows_per_batch_per_core * num_datum_row_per_group) *
                                  (pad.active ? static_cast<float>(pad.logical_hw) / pad.padded_hw : 1.0F);
+    // Truncate the per-face scaler sqrt(1/N) to bf16 rather than rounding it: its ~1% low bias offsets the
+    // ~1% high bias of accumulating E[x] and E[(x - E[x])^2] in a 16-bit DEST. t * t is exact in fp32, so
+    // the planner's sqrt recovers t and its bf16 rounding leaves it unchanged.
+    const float local_reduce_scale = [&] {
+        const float t = std::bit_cast<float>(std::bit_cast<uint32_t>(std::sqrt(1.0F / reduce_divisor)) & 0xFFFF0000U);
+        return t * t;
+    }();
     const auto reduce_plans = use_welford ? GroupNormReducePlans{}
                                           : make_groupnorm_reduce_plans(
-                                                block_ht,
-                                                block_wt,
                                                 1,
                                                 1,
                                                 1,
-                                                1.0F / reduce_divisor,
+                                                1,
+                                                1,
+                                                local_reduce_scale,
                                                 1.0F / (num_cores_per_batch * num_cores_per_group),
                                                 im_data_format,
                                                 {device->arch(), fp32_dest_acc_en, dst_full_sync_en, math_fidelity},
                                                 compute_kernel_lib::ReduceInputPolicy::WaitAndPopPerTile,
-                                                // Masking leaves input/mask unpack formats active. The new
-                                                // mean call consumes intermediates and its planned auxiliary.
+                                                // The E[x] accumulation leaves the x/ones unpack formats
+                                                // active; the mean call restores ex2pe and its auxiliary.
                                                 compute_kernel_lib::ReduceDataFormatReconfigMode::INPUT);
 
     ////////////////////////////////////////////////////////////////////////////
@@ -1182,6 +1190,19 @@ tt::tt_metal::ProgramDescriptor GroupNormDeviceOperation::GroupNormShardedProgra
             .page_size = single_tile_size,
         }}},
     });
+
+    if (!use_welford) {
+        constexpr uint32_t cb_ones_index = tt::CBIndex::c_26;
+        desc.cbs.push_back(CBDescriptor{
+            .total_size = scalar_single_tile_size,
+            .core_ranges = all_cores,
+            .format_descriptors = {{CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(cb_ones_index),
+                .data_format = eps_cb_data_format,
+                .page_size = scalar_single_tile_size,
+            }}},
+        });
+    }
 
     // Pad correction: c_18 rowvalid (written once per core by the writer, never popped) and
     // c_19 the composed per-(batch,group) mask -- rowvalid x column selector, produced and

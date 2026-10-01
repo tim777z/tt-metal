@@ -106,7 +106,8 @@ void kernel_main() {
     using MeanArgs = ttnn::kernel_lib::ReduceCallArgs<28>;
     using VarianceArgs = ttnn::kernel_lib::ReduceCallArgs<MeanArgs::next_compile_time_args_offset()>;
     using GlobalArgs = ttnn::kernel_lib::ReduceCallArgs<VarianceArgs::next_compile_time_args_offset()>;
-    using MeanCall = ttnn::kernel_lib::BoundReduceCallArgs<MeanArgs, dfb_x_id, dfb_scaler_id, dfb_ex_partial_id>;
+    using MeanCall = ttnn::kernel_lib::BoundReduceCallArgs<MeanArgs, dfb_ex2pe_id, dfb_scaler_id, dfb_ex_partial_id>;
+    constexpr uint32_t dfb_ones_id = tt::CBIndex::c_26;
     using VarianceCall =
         ttnn::kernel_lib::BoundReduceCallArgs<VarianceArgs, dfb_ex2pe_id, dfb_scaler_id, dfb_ex_partial_id>;
     using GlobalCall =
@@ -186,6 +187,7 @@ void kernel_main() {
     DataflowBuffer dfb_eps(dfb_eps_id);
     DataflowBuffer dfb_ex(dfb_ex_id);
     DataflowBuffer dfb_ex2pe(dfb_ex2pe_id);
+    DataflowBuffer dfb_ones(dfb_ones_id);
     const DataflowBuffer dfb_ex_external(dfb_ex_external_id);
     DataflowBuffer dfb_ex_global(dfb_ex_global_id);
     DataflowBuffer dfb_ex_partial(dfb_ex_partial_id);
@@ -327,11 +329,29 @@ void kernel_main() {
                 index_h_offset += per_core_N;
             }
             dfb_x.push_back(block_hw);
-            // The planner selects the cross-tile sum algorithm. The scalar
-            // output retains exact zeros outside [0,0], as required by the
-            // reader's packed cross-core statistics protocol.
+
+            // Partial E[x]: accumulating tile * 1 in DEST keeps one partial sum per datum, which is
+            // more precise than folding the block into a single datum with a multi-tile reduction.
+            reconfig_data_format_srcb(has_row_mask ? dfb_mask_last_id : dfb_input_mask_id, dfb_ones_id);
+            mul_init(dfb_x_id, dfb_ones_id);
+            dfb_ex2pe.reserve_back(1);
             dfb_x.wait_front(block_hw);
+            dfb_ones.wait_front(1);
+            tile_regs_acquire();
+            for (uint32_t i = 0; i < block_hw; ++i) {
+                mul_tiles(dfb_x_id, dfb_ones_id, i, 0, dst0);
+            }
+            tile_regs_commit();
+            tile_regs_wait();
+            pack_tile(dst0, dfb_ex2pe_id);
+            tile_regs_release();
+            dfb_ex2pe.push_back(1);
+
+            // The scalar output retains exact zeros outside [0,0], as required by the
+            // reader's packed cross-core statistics protocol.
+            dfb_ex2pe.wait_front(1);
             compute_kernel_lib::reduce<MeanCall>();
+            dfb_ex2pe.pop_front(1);
 
             if constexpr (is_mcast_sender and num_cores_per_mcast_group > 1) {
                 compute_kernel_lib::reduce<GlobalCall>();
