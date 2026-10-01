@@ -140,7 +140,7 @@ def _chunk_slice(pool, actual_start: int, actual_isl=None):
     return _pool_slice(pool, actual_start, CHUNK_SIZE, actual_isl)
 
 
-def _rotated_row_positions(actual_start: int) -> list:
+def _rotated_chip_positions(actual_start: int) -> list:
     """Global position of each chip's H2D row entries once the device rotates a chunk starting at
     ``actual_start``: deepseek_v3_d_p's ``rotated_chip_positions``, inlined because importing it loads
     that whole package."""
@@ -160,7 +160,7 @@ def _h2d_rows(tokens, actual_start: int = 0):
     assert len(tokens) == CHUNK_SIZE, f"expected {CHUNK_SIZE} tokens, got {len(tokens)}"
     ids = torch.tensor(tokens, dtype=torch.int64)
     if MTP_LEVELS and actual_start % CHUNK_SIZE:
-        ids = ids[[p - actual_start for row in _rotated_row_positions(actual_start) for p in row]]
+        ids = ids[[p - actual_start for row in _rotated_chip_positions(actual_start) for p in row]]
     return _to_host_array(ids.view(sp, 1, stride))
 
 
@@ -171,7 +171,7 @@ def _mtp_rows(pool, actual_start: int, actual_isl=None):
     align_pad = [MTP_PAD_TOKEN_ID] * (n_mtp - MTP_LEVELS)
     rows = [
         _pool_slice(pool, row[-1] + 1, MTP_LEVELS, actual_isl) + align_pad
-        for row in _rotated_row_positions(actual_start)
+        for row in _rotated_chip_positions(actual_start)
     ]
     return _to_host_array(torch.tensor(rows, dtype=torch.int64).unsqueeze(1))
 
