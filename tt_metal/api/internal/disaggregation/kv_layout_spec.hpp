@@ -58,8 +58,6 @@ using WindowTokens = ttsl::StrongType<uint32_t, struct WindowTokensTag>;
 // NOT a layout quantity — distinct from the DRAM/flash "chunk" strides (KChunkSize, DeviceChunkSize,
 // and chunk_size_bytes' token-block granule), which is why it has its own name.
 using BlockLocalSpan = ttsl::StrongType<uint32_t, struct BlockLocalSpanTag>;
-// Depth of a conv / token-shift rolling ring: kernel_size - 1 inputs retained.
-using RollingWidth = ttsl::StrongType<uint32_t, struct RollingWidthTag>;
 
 // ---------------------------------------------------------------------------------------------
 // (1) TemporalPolicy — retention window over the prefix, keyed by the universal `prefix_len`.
@@ -81,10 +79,11 @@ struct BlockLocal {
     BlockLocalSpan span;
 };
 
-// The last (width) inputs — a tiny conv / token-shift ring. Mamba conv1d, RWKV token-shift.
-struct Rolling {
-    RollingWidth width;
-};
+// The last (kernel_size - 1) inputs — a tiny conv / token-shift ring (Mamba conv1d, RWKV
+// token-shift). Tagless: the ring depth is the conv-state tensor's OWN axis (KDA allocates it as
+// [B, kernel_size - 1, width]), so it is derived from the tensor when needed, not stored here —
+// like the sequence axis. has_sequence() is false (no per-token axis).
+struct Rolling {};
 
 // Computed once at prefill and frozen; addressed by SOURCE position, never grows. Enc-dec /
 // vision cross-attention.

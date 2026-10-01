@@ -30,7 +30,6 @@ TensorSpec dummy_tensor() {
 // ND-sharded TensorSpecs in test_to_chunk_map.cpp.
 
 constexpr uint32_t EXPECTED_WINDOW_TOKENS = 4096;
-constexpr uint32_t EXPECTED_CONV_WIDTH = 3;  // conv kernel 4 -> retain last 3
 
 // --- TemporalPolicy ---
 
@@ -45,10 +44,11 @@ TEST(KvLayoutSpec, CPU_TemporalPolicyWindowCarriesWidth) {
     EXPECT_EQ(std::get<temporal::Window>(policy).width.get(), EXPECTED_WINDOW_TOKENS);
 }
 
-TEST(KvLayoutSpec, CPU_TemporalPolicyRollingCarriesWidth) {
-    TemporalPolicy policy = temporal::Rolling{.width = RollingWidth{EXPECTED_CONV_WIDTH}};
-    ASSERT_TRUE(std::holds_alternative<temporal::Rolling>(policy));
-    EXPECT_EQ(std::get<temporal::Rolling>(policy).width.get(), EXPECTED_CONV_WIDTH);
+TEST(KvLayoutSpec, CPU_TemporalPolicyRollingIsTagless) {
+    // Conv / token-shift ring: tagless. The kernel_size-1 ring depth is the conv-state tensor's own
+    // axis ([B, kernel_size-1, width]), derived from the tensor, not stored on the policy.
+    TemporalPolicy policy = temporal::Rolling{};
+    EXPECT_TRUE(std::holds_alternative<temporal::Rolling>(policy));
 }
 
 TEST(KvLayoutSpec, CPU_TemporalPolicyRecurrentIsNone) {
@@ -68,8 +68,7 @@ TEST(KvLayoutSpec, CPU_HasSequenceFromTemporal) {
     EXPECT_TRUE(swa.has_sequence());
 
     // Recurrent / conv summaries have no per-token sequence axis.
-    KvLayoutSpec conv{.tensor = dummy_tensor(),
-                      .temporal = temporal::Rolling{.width = RollingWidth{EXPECTED_CONV_WIDTH}}};
+    KvLayoutSpec conv{.tensor = dummy_tensor(), .temporal = temporal::Rolling{}};
     EXPECT_FALSE(conv.has_sequence());
 
     KvLayoutSpec ssm{.tensor = dummy_tensor(), .temporal = temporal::None{}};
