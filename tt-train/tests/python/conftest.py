@@ -210,27 +210,6 @@ def fresh_device_mesh():
 TP_MESH_SHAPE = (1, 2)
 
 
-def _open_mesh_or_skip(shape, axis_names: tuple, purpose: str):
-    """Open a ``shape`` mesh with ``axis_names`` for a module-scoped fixture, or ``pytest.skip`` the requesting module.
-
-    Points ``TT_MESH_GRAPH_DESC_PATH`` at a bundled descriptor first (unless the caller set one), closes whatever mesh
-    an earlier module left open, and undoes both if the open fails. Returns the previous descriptor path, which the
-    fixture hands back to ``_close_mesh`` at teardown."""
-    previous_mgd = _ensure_mgd_path(shape)
-    _close_device_mesh_quietly()
-    try:
-        ttml.open_device_mesh(ttml.Mesh(shape, axis_names))
-    except Exception as e:  # noqa: BLE001
-        _close_mesh(previous_mgd)
-        pytest.skip(f"needs a [{shape[0]}, {shape[1]}] {purpose} mesh: {e}")
-    return previous_mgd
-
-
-def _close_mesh(previous_mgd) -> None:
-    _close_device_mesh_quietly()
-    _restore_mgd_path(previous_mgd)
-
-
 @pytest.fixture(scope="module")
 def tp_mesh():
     """A ``[1, 2]`` mesh with axes ``("dp", "tp")``, per requesting module.
@@ -269,16 +248,15 @@ FSDP_MESH_SHAPE = (1, 2)  # same shape as TP_MESH_SHAPE, so _MGD_FOR_ARCH_AND_SH
 
 
 @pytest.fixture(scope="module")
-def fsdp_mesh():
-    """A ``[1, 2]`` mesh with axes ``("dp", "fsdp")``, per requesting module.
+def fsdp_mesh(fresh_device_mesh):
+    """Open a ``[1, 2]`` mesh with axes ``("dp", "fsdp")``, per requesting module.
 
     ``"fsdp"`` is the axis ``ttml.fsdp.fully_shard`` shards across by default. FSDP does not consult the
     ParallelismContext, so none is installed here and this fixture is usable in a session before or after
     ``tp_mesh`` modules. Module-scoped for the same reason as ``tp_mesh``; skips if the mesh cannot be opened.
+
+    The mesh is closed at teardown so later test modules can lazily reopen
+    a fresh single-device handle if they need to.
     """
-    previous_mgd = _open_mesh_or_skip(FSDP_MESH_SHAPE, ("dp", "fsdp"), "'fsdp'")
-
-    yield ttml.mesh()
-
-    reset_metal_env_quietly()
-    _restore_mgd_path(previous_mgd)
+    with fresh_device_mesh((FSDP_MESH_SHAPE), ("dp", "fsdp"), what="fsdp") as mesh:
+        yield mesh
