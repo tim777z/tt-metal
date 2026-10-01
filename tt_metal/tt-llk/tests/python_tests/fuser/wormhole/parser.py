@@ -49,6 +49,7 @@ from fuser.validator import (
     FpuMathSchemaBase,
     OperationSchemaBase,
     PackSchema,
+    TopKSfpuMathSchema,
     UnarySfpuMathSchema,
     eltwise_unpacker_rules,
     forced_unpackers,
@@ -70,6 +71,7 @@ from .fpu.transpose_dest import TransposeDestFpu
 from .packer.packer import Packer
 from .packer.untilize import PackUntilize
 from .sfpu.binary import BinarySfpu
+from .sfpu.topk import TopKSfpu
 from .sfpu.unary import UnarySfpu
 from .unpacker.matmul import MatmulUnpacker
 from .unpacker.reduce import ReduceUnpacker
@@ -292,8 +294,17 @@ class WormholeBinarySfpuMathSchema(BinarySfpuMathSchema):
     _sfpu_ops: ClassVar = BINARY_SFPU_OPS
 
 
+class WormholeTopKSfpuMathSchema(TopKSfpuMathSchema):
+    _sfpu_cls: ClassVar = TopKSfpu
+
+
 MathSchema = Annotated[
-    Union[FpuMathSchema, WormholeUnarySfpuMathSchema, WormholeBinarySfpuMathSchema],
+    Union[
+        FpuMathSchema,
+        WormholeUnarySfpuMathSchema,
+        WormholeBinarySfpuMathSchema,
+        WormholeTopKSfpuMathSchema,
+    ],
     Field(discriminator="type"),
 ]
 
@@ -303,7 +314,10 @@ class WormholePackSchema(PackSchema):
 
 
 PackEntrySchema = Union[
-    WormholeUnarySfpuMathSchema, WormholeBinarySfpuMathSchema, WormholePackSchema
+    WormholeUnarySfpuMathSchema,
+    WormholeBinarySfpuMathSchema,
+    WormholeTopKSfpuMathSchema,
+    WormholePackSchema,
 ]
 
 
