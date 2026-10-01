@@ -60,8 +60,6 @@ using WindowTokens = ttsl::StrongType<uint32_t, struct WindowTokensTag>;
 using BlockLocalSpan = ttsl::StrongType<uint32_t, struct BlockLocalSpanTag>;
 // Depth of a conv / token-shift rolling ring: kernel_size - 1 inputs retained.
 using RollingWidth = ttsl::StrongType<uint32_t, struct RollingWidthTag>;
-// A layer index within the model.
-using LayerIndex = ttsl::StrongType<uint32_t, struct LayerIndexTag>;
 
 // ---------------------------------------------------------------------------------------------
 // (1) TemporalPolicy — retention window over the prefix, keyed by the universal `prefix_len`.
