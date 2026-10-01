@@ -315,10 +315,42 @@ def test_custom_mm_odd_k(formats, M, kt, ct):
 
 
 BFP2_CASES = [
-    pytest.param(8, 4, 4, InputOutputFormat(DataFormat.Float16_b, DataFormat.Float16_b, DataFormat.Bfp2_b), id="M8-k4-ct4-bfp2"),
-    pytest.param(8, 4, 8, InputOutputFormat(DataFormat.Float16_b, DataFormat.Float16_b, DataFormat.Bfp2_b), id="M8-k4-ct8-bfp2"),
-    pytest.param(8, 2, 1, InputOutputFormat(DataFormat.Float16_b, DataFormat.Float16_b, DataFormat.Bfp2_b), id="M8-k2-ct1-bfp2"),
-    pytest.param(1, 2, 2, InputOutputFormat(DataFormat.Float16_b, DataFormat.Float16_b, DataFormat.Bfp2_b), id="M1-k2-ct2-bfp2"),
+    pytest.param(
+        8,
+        4,
+        4,
+        InputOutputFormat(
+            DataFormat.Float16_b, DataFormat.Float16_b, DataFormat.Bfp2_b
+        ),
+        id="M8-k4-ct4-bfp2",
+    ),
+    pytest.param(
+        8,
+        4,
+        8,
+        InputOutputFormat(
+            DataFormat.Float16_b, DataFormat.Float16_b, DataFormat.Bfp2_b
+        ),
+        id="M8-k4-ct8-bfp2",
+    ),
+    pytest.param(
+        8,
+        2,
+        1,
+        InputOutputFormat(
+            DataFormat.Float16_b, DataFormat.Float16_b, DataFormat.Bfp2_b
+        ),
+        id="M8-k2-ct1-bfp2",
+    ),
+    pytest.param(
+        1,
+        2,
+        2,
+        InputOutputFormat(
+            DataFormat.Float16_b, DataFormat.Float16_b, DataFormat.Bfp2_b
+        ),
+        id="M1-k2-ct2-bfp2",
+    ),
 ]
 
 
