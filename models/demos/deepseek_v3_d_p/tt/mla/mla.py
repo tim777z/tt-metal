@@ -26,6 +26,80 @@ from models.demos.deepseek_v3_d_p.utils.kv_cache_utils import MlaKvCache, MlaKvC
 # Axis 0 is N/S (mesh rows), axis 1 is E/W (mesh cols) -- the same convention high_bw_all_gather uses.
 
 
+_STEM_PROBE_CALLS: dict = {}
+
+
+def _stem_probe(mesh_device, tag, layer_idx, tensor, valid=None):
+    if ("devmap",) not in _STEM_PROBE_CALLS:
+        _STEM_PROBE_CALLS[("devmap",)] = 1
+        try:
+            n_rows, n_cols = mesh_device.shape[0], mesh_device.shape[1]
+            ids = [[mesh_device.get_device_id(ttnn.MeshCoordinate(r, c)) for c in range(n_cols)] for r in range(n_rows)]
+            logger.info(f"[stem_probe] device ids by mesh (row, col): {ids}")
+        except Exception as exc:
+            logger.info(f"[stem_probe] device id map unavailable: {exc}")
+    magnitude = ttnn.abs(tensor, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    row_max = ttnn.max(magnitude, dim=-1, keepdim=True)
+    ttnn.deallocate(magnitude)
+    try:
+        host = ttnn.to_torch(
+            row_max,
+            mesh_composer=ttnn.ConcatMesh2dToTensor(mesh_device, dims=(-2, -1), mesh_shape=mesh_device.shape),
+        ).float()
+    except Exception as exc:
+        if _STEM_PROBE_CALLS.get(("skip", tag)) is None:
+            _STEM_PROBE_CALLS[("skip", tag)] = 1
+            logger.info(f"[stem_probe] {tag} not composable on this mesh, skipping: {exc}")
+        ttnn.deallocate(row_max)
+        return
+    ttnn.deallocate(row_max)
+    rmax = host.reshape(-1, host.shape[-1]).max(dim=1).values
+    med = float(rmax.median())
+    outlier = rmax > float(os.environ.get("PREFILL_STEM_PROBE_CUT", "1e6"))
+    bands = 8
+    per = rmax.shape[0] // bands
+    counts = [int(outlier[b * per : (b + 1) * per].sum()) for b in range(bands)]
+    band_max = [float(rmax[b * per : (b + 1) * per].max()) for b in range(bands)]
+    rows = outlier.nonzero().flatten().tolist()
+    if rows and os.environ.get("PREFILL_STEM_PROBE_DUMP"):
+        _stem_probe_capture(mesh_device, tag, layer_idx, tensor, rows)
+    call = _STEM_PROBE_CALLS.get((layer_idx, tag), 0)
+    _STEM_PROBE_CALLS[(layer_idx, tag)] = call + 1
+    _STEM_PROBE_CALLS[("hits", tag)] = _STEM_PROBE_CALLS.get(("hits", tag), 0) + int(bool(rows))
+    logger.info(
+        f"[stem_probe] layer {layer_idx} chunk {call} {tag} med={med:.4g} "
+        f"outliers={counts} total={sum(counts)} band_max={['%.3g' % m for m in band_max]} "
+        f"valid={valid} nrows={rmax.shape[0]} rows={rows[:16]}"
+    )
+
+
+def _stem_probe_capture(mesh_device, tag, layer_idx, tensor, rows):
+    key = ("dump", layer_idx, tag)
+    if key in _STEM_PROBE_CALLS:
+        return
+    if _STEM_PROBE_CALLS.get(("dump_budget",), 0) >= 24:
+        return
+    _STEM_PROBE_CALLS[key] = 1
+    _STEM_PROBE_CALLS[("dump_budget",)] = _STEM_PROBE_CALLS.get(("dump_budget",), 0) + 1
+    out_dir = os.environ["PREFILL_STEM_PROBE_DUMP"]
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        host = ttnn.to_torch(
+            tensor,
+            mesh_composer=ttnn.ConcatMesh2dToTensor(mesh_device, dims=(-2, -1), mesh_shape=mesh_device.shape),
+        )
+        flat = host.reshape(-1, host.shape[-1])
+        lo = (min(rows) // 32) * 32
+        hi = min(((max(rows) // 32) + 1) * 32, flat.shape[0])
+        torch.save(
+            {"tag": tag, "layer": layer_idx, "rows": rows, "lo": lo, "hi": hi, "slab": flat[lo:hi].clone()},
+            os.path.join(out_dir, f"probe_L{layer_idx}_{tag}_{lo}.pt"),
+        )
+        logger.info(f"[stem_probe] captured {tag} layer {layer_idx} rows [{lo},{hi}) to {out_dir}")
+    except Exception as exc:
+        logger.info(f"[stem_probe] capture failed for {tag} layer {layer_idx}: {exc}")
+
+
 class ttMLA:
     MLA_WEIGHT_NAMES = [
         "q_a_layernorm",
@@ -1066,6 +1140,9 @@ class ttMLA:
             **meta_slot_kwargs,
         )
 
+        if os.environ.get("PREFILL_STEM_PROBE"):
+            _stem_probe(self.mesh_device, "ring_out", self.layer_idx, attn_out, getattr(self, "_probe_range", None))
+
         # ring_mla output is in kv_lora_rank (latent V) space; expand to v_head_dim per head. Unlike the
         # single-shot path this in0 is the per-head SDPA output (batch=local_heads), so the tuned 640
         # config is a true batched MatmulMultiCoreReuse. When no tuned config matches (non-Kimi variant
@@ -1288,6 +1365,10 @@ class ttMLA:
         cache and consumed by attention without a decode/re-encode round trip.
         """
         # NOTE: input is ideally L1 for chunked, but hidden states memory config is set outside the module
+        if os.environ.get("PREFILL_STEM_PROBE"):
+            _stem_probe(
+                self.mesh_device, "hidden_in", self.layer_idx, hidden_states, getattr(self, "_probe_range", None)
+            )
         kv_mm_kwargs = self._get_mm_kwargs("kv_a_proj_with_mqa", seq_len_local)
         # high_bw_all_gather directly streams its source from DRAM. Kimi's 640-token
         # matmul tune otherwise returns L1, while the fixed-slab TP path is active.
@@ -1307,6 +1388,10 @@ class ttMLA:
             assert seq_len_local == self.active_seq_len_local, (
                 f"KV stem gather was preallocated for {self.active_seq_len_local} local tokens, " f"got {seq_len_local}"
             )
+            if os.environ.get("PREFILL_STEM_PROBE"):
+                _stem_probe(
+                    self.mesh_device, "tt_kv_partial", self.layer_idx, tt_kv, getattr(self, "_probe_range", None)
+                )
             tt_kv = ttnn.experimental.high_bw_all_gather(
                 tt_kv,
                 dim=1,
@@ -1334,6 +1419,14 @@ class ttMLA:
                 tt_kv, [0, 0, 0, self.kv_lora_rank], [1, 1, seq_len_local, self.kv_lora_rank + self.qk_rope_head_dim]
             )
             ttnn.deallocate(tt_kv)
+
+        if os.environ.get("PREFILL_STEM_PROBE"):
+            _stem_probe(
+                self.mesh_device, "tt_kv_reduced_nope", self.layer_idx, tt_kv_nope, getattr(self, "_probe_range", None)
+            )
+            _stem_probe(
+                self.mesh_device, "tt_kv_reduced_pe", self.layer_idx, tt_kv_rope, getattr(self, "_probe_range", None)
+            )
 
         tt_kv_nope = ttnn.rms_norm(
             tt_kv_nope,
@@ -1482,6 +1575,8 @@ class ttMLA:
         wkv_b2: it acts in v_head_dim space, and g*(attn @ W_b2) != (g*attn) @ W_b2.
         """
         v_out = ttnn.experimental.nlp_concat_heads(attn_out, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        if os.environ.get("PREFILL_STEM_PROBE"):
+            _stem_probe(self.mesh_device, "concat_heads", self.layer_idx, v_out, getattr(self, "_probe_range", None))
         if self._use_gate:
             assert hidden_states is not None, "gated MLA needs hidden_states to compute g_proj"
             g = self._output_gate(hidden_states, seq_len_local)
@@ -1493,6 +1588,8 @@ class ttMLA:
             compute_kernel_config=self.default_compute_kernel_config,
             **self._get_mm_kwargs("o_proj", seq_len_local),
         )
+        if os.environ.get("PREFILL_STEM_PROBE"):
+            _stem_probe(self.mesh_device, "o_proj_out", self.layer_idx, v_out, getattr(self, "_probe_range", None))
         if self.tp_factor > 1:
             return ttnn.experimental.reduce_scatter_minimal_async(
                 v_out,
@@ -1556,6 +1653,7 @@ class ttMLA:
 
         seq_len_local = hidden_states.shape[2]
         kv_actual_isl = actual_start
+        self._probe_range = (actual_start, actual_end)
 
         # Sparse always runs the block-cyclic path (indexed rope + kvpe cache read-back), which treats
         # single-shot as one full-seq chunk at offset 0. Coerce the None single-shot offset to 0 so the
@@ -1619,6 +1717,8 @@ class ttMLA:
             )
 
         tt_q = self._q_stem(qr, rope_tensors, kv_actual_isl, seq_len_local, metadata=metadata)
+        if os.environ.get("PREFILL_STEM_PROBE"):
+            _stem_probe(self.mesh_device, "q_stem", self.layer_idx, tt_q, getattr(self, "_probe_range", None))
         tt_kvpe, tt_kv_nope, kv_intermediates = self._kv_stem(
             hidden_states,
             rope_tensors,
@@ -1650,7 +1750,11 @@ class ttMLA:
         else:
             attn_out = self._attention(**attention_kwargs)
 
+        if os.environ.get("PREFILL_STEM_PROBE"):
+            _stem_probe(self.mesh_device, "attn_out", self.layer_idx, attn_out, getattr(self, "_probe_range", None))
         out = self._o_proj_epilogue(attn_out, seq_len_local, hidden_states=hidden_states)
+        if os.environ.get("PREFILL_STEM_PROBE"):
+            _stem_probe(self.mesh_device, "mla_out", self.layer_idx, out, getattr(self, "_probe_range", None))
         ttnn.tracy_message("`TT_SIGNPOST: MLA_END`")
         # ``indices`` survives _sparse_mla (it deallocs only re-sharded copies), so it is safe to return
         # for a "full" layer to hand to downstream "shared" layers (GLM-5.3 reuse).
