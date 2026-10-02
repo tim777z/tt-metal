@@ -30,6 +30,9 @@ namespace tt::tt_metal {
  * order, starting from the point at which the reader is created. The writer never blocks on a reader: a
  * reader that cannot keep up loses its oldest unread items (tracked by Reader::dropped()).
  *
+ * Published items also take consecutive positions from 0, and any thread can copy an item the ring still
+ * holds by its position with read_at(), without a reader.
+ *
  * If the compile-time constant `is_always_lock_free` is true, then the ring is guaranteed to be lock-free.
  * In particular, all publish and read operations are wait-free in this case.
  *
@@ -37,8 +40,10 @@ namespace tt::tt_metal {
  * Readers are single-threaded, and all readers must be destroyed before the ring.
  *
  * @tparam T Element type.
+ * @tparam ChunkSlots 0 allocates every slot at construction. A power of two allocates slots that many at a time, each
+ *         chunk when the writer first reaches it, so a large ring costs memory only as it fills.
  */
-template <typename T>
+template <typename T, size_t ChunkSlots = 0>
 class BroadcastRing {
     static constexpr bool kTriviallyCopyable = std::is_trivially_copyable_v<T>;
 #if defined(__cpp_lib_atomic_lock_free_type_aliases)
@@ -47,24 +52,30 @@ class BroadcastRing {
     using WakeTokenAtomic = std::atomic<uint32_t>;
 #endif
     static constexpr size_t kFalseSharingSize = 128;
-    struct SlotsView;
+    static constexpr bool kChunked = ChunkSlots != 0;
+    static_assert(!kChunked || std::has_single_bit(ChunkSlots), "ChunkSlots must be 0 or a power of two");
+    struct FlatSlotsView;
+    struct ChunkedSlotsView;
+    using SlotsView = std::conditional_t<kChunked, ChunkedSlotsView, FlatSlotsView>;
     struct SharedState;
 
 public:
     /**
      * @brief True when the ring is guaranteed to be lock-free: requires T to be trivially copyable (otherwise
-     * each slot is guarded by a mutex) and the platform's 64-bit and wake-token atomics to be lock-free.
+     * each slot is guarded by a mutex), ChunkSlots 0 (otherwise a publish may allocate a chunk), and the
+     * platform's 64-bit and wake-token atomics to be lock-free.
      */
-    static constexpr bool is_always_lock_free =
-        kTriviallyCopyable && std::atomic<uint64_t>::is_always_lock_free && WakeTokenAtomic::is_always_lock_free;
+    static constexpr bool is_always_lock_free = kTriviallyCopyable && !kChunked &&
+                                                std::atomic<uint64_t>::is_always_lock_free &&
+                                                WakeTokenAtomic::is_always_lock_free;
 
     /**
      * @brief Constructs a broadcast ring with at least @p capacity slots.
-     * @param capacity Requested slot count; gets rounded up to the next power of two.
+     * @param capacity Requested slot count; gets rounded up to the next power of two, and to at least ChunkSlots.
      */
     explicit BroadcastRing(size_t capacity) :
-        capacity_(capacity ? std::bit_ceil(capacity) : 1),
-        slots_(std::make_unique<Slot[]>(capacity_)),
+        capacity_(std::bit_ceil(std::max<size_t>({capacity, ChunkSlots, 1}))),
+        storage_(capacity_),
         writer_(&shared_state_, view()) {}
 
     ~BroadcastRing() {
@@ -75,17 +86,46 @@ public:
 
     [[nodiscard]] size_t capacity() const noexcept { return capacity_; }
 
+    /** @brief Number of items published so far; the next item takes this position. */
+    [[nodiscard]] uint64_t published() const noexcept { return shared_state_.head.load(std::memory_order_acquire); }
+
+    /** @brief Position of the oldest item the ring holds; items before it have been overwritten. */
+    [[nodiscard]] uint64_t oldest() const noexcept {
+        const uint64_t head = published();
+        return head > capacity_ ? head - capacity_ : 0;
+    }
+
+    /** @brief Number of items the ring holds: published() - oldest(). */
+    [[nodiscard]] size_t size() const noexcept { return std::min<uint64_t>(published(), capacity_); }
+
+    /**
+     * @brief Copies the item at @p position into @p out; callable from any thread.
+     * @return True when @p out holds the item; false when @p position is not yet published or was overwritten
+     *         before or during the copy.
+     */
+    [[nodiscard]] bool read_at(uint64_t position, T& out) const noexcept(kLoadNoexcept) {
+        const uint64_t head = published();
+        if (position >= head || head - position > capacity_) {
+            return false;
+        }
+        view().slot_at(position).load(out);
+        // As in Reader::read_batch, a publish that overwrote the slot during the copy has raised claim past
+        // position + capacity.
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return shared_state_.claim.load(std::memory_order_relaxed) - position <= capacity_;
+    }
+
     class alignas(kFalseSharingSize) Writer {
     public:
         /** @brief Publishes a single item (does not wake readers; see wake_readers()). */
-        void publish(const T& item) noexcept { publish_batch({&item, 1}); }
+        void publish(const T& item) noexcept(!kChunked) { publish_batch({&item, 1}); }
 
         /**
          * @brief Publishes a batch of items (does not wake readers; see wake_readers()).
          *
          * If @p items is larger than capacity(), only its last capacity() items are retained.
          */
-        void publish_batch(std::span<const T> items) noexcept {
+        void publish_batch(std::span<const T> items) noexcept(!kChunked) {
             static_assert(kStoreNoexcept, "T must be nothrow-copyable; use publish_batch_move otherwise");
             publish_impl(items);
         }
@@ -95,7 +135,7 @@ public:
          *
          * If @p items is larger than capacity(), only its last capacity() items are retained.
          */
-        void publish_batch_move(std::span<T> items) noexcept
+        void publish_batch_move(std::span<T> items) noexcept(!kChunked)
             requires std::is_move_constructible_v<T>
         {
             static_assert(kMoveStoreNoexcept, "T must be nothrow-movable");
@@ -136,9 +176,9 @@ public:
             std::atomic_thread_fence(std::memory_order_release);
             for (size_t k = skip; k < n; k++) {
                 if constexpr (std::is_const_v<U>) {
-                    view.slot_at(head + k).store(items[k]);
+                    view.writable_slot(head + k).store(items[k]);
                 } else {
-                    view.slot_at(head + k).store(std::move(items[k]));
+                    view.writable_slot(head + k).store(std::move(items[k]));
                 }
             }
             shared_state->head.store(head + n, std::memory_order_release);
@@ -378,10 +418,52 @@ private:
 
     using Slot = std::conditional_t<kTriviallyCopyable, AtomicSlot, LockedSlot>;
 
-    struct SlotsView {
+    struct FlatSlotsView {
         Slot* slots;
         size_t capacity;
         Slot& slot_at(uint64_t position) const noexcept { return slots[position & (capacity - 1)]; }
+        Slot& writable_slot(uint64_t position) const noexcept { return slot_at(position); }
+    };
+
+    // The writer stores a chunk's pointer before the head that makes any of its slots readable, so a reader never
+    // finds it missing.
+    struct ChunkedSlotsView {
+        std::atomic<Slot*>* chunks;
+        size_t capacity;
+        Slot& slot_at(uint64_t position) const noexcept {
+            const size_t index = position & (capacity - 1);
+            return chunks[index / ChunkSlots].load(std::memory_order_acquire)[index % ChunkSlots];
+        }
+        Slot& writable_slot(uint64_t position) const {
+            const size_t index = position & (capacity - 1);
+            std::atomic<Slot*>& chunk = chunks[index / ChunkSlots];
+            Slot* slots = chunk.load(std::memory_order_relaxed);
+            if (slots == nullptr) {
+                slots = new Slot[ChunkSlots]();
+                chunk.store(slots, std::memory_order_release);
+            }
+            return slots[index % ChunkSlots];
+        }
+    };
+
+    struct FlatStorage {
+        explicit FlatStorage(size_t capacity) : slots(std::make_unique<Slot[]>(capacity)) {}
+        SlotsView view(size_t capacity) const noexcept { return {slots.get(), capacity}; }
+        std::unique_ptr<Slot[]> slots;
+    };
+    struct ChunkedStorage {
+        explicit ChunkedStorage(size_t capacity) :
+            chunk_count(capacity / ChunkSlots), chunks(std::make_unique<std::atomic<Slot*>[]>(chunk_count)) {}
+        ~ChunkedStorage() {
+            for (size_t k = 0; k < chunk_count; k++) {
+                delete[] chunks[k].load(std::memory_order_relaxed);
+            }
+        }
+        ChunkedStorage(const ChunkedStorage&) = delete;
+        ChunkedStorage& operator=(const ChunkedStorage&) = delete;
+        SlotsView view(size_t capacity) const noexcept { return {chunks.get(), capacity}; }
+        size_t chunk_count;
+        std::unique_ptr<std::atomic<Slot*>[]> chunks;
     };
 
     // head/claim are accessed together so they share a cache line; wake_token is on its own line so a
@@ -392,10 +474,10 @@ private:
         alignas(kFalseSharingSize) WakeTokenAtomic wake_token{0};
     };
 
-    SlotsView view() const noexcept { return {slots_.get(), capacity_}; }
+    SlotsView view() const noexcept { return storage_.view(capacity_); }
 
     const size_t capacity_;
-    const std::unique_ptr<Slot[]> slots_;
+    const std::conditional_t<kChunked, ChunkedStorage, FlatStorage> storage_;
     SharedState shared_state_;
     mutable std::atomic<uint32_t> active_readers_{0};
     Writer writer_;
