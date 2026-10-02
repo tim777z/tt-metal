@@ -51,6 +51,7 @@ import pytest
 import torch
 
 import ttnn
+from models.common.utility_functions import skip_for_wormhole_b0
 from tests.tt_eager.python_api_testing.sweep_tests.comparison_funcs import comp_pcc
 
 # One module-scoped device: the KV caches below are up to 32k tokens and every case
@@ -63,6 +64,9 @@ NUM_KV_HEADS = 1
 NUM_Q_HEADS = 6  # valid q heads per candidate; rows 6..31 of each Q tile are padding
 TILE = 32
 SCALE = 1.0 / (HEAD_DIM**0.5)
+
+# T=11 needs 1,447,936 B of CBs (see below), more than Wormhole L1 offers.
+T11_BH_ONLY = skip_for_wormhole_b0("T=11 spec config does not fit Wormhole L1")
 
 # Spec mode makes every Q-shaped CB T times larger (PNHt == T), so the (k_chunk_size,
 # cores-per-head) budget shrinks sharply as T grows. These are the largest points that fit
@@ -262,7 +266,7 @@ def _check(device, T, p, seq_len, seed=0, program_config=None, pcc_ref_vs_spec=N
 # inside a chunk".
 
 
-@pytest.mark.parametrize("T", [4, 7, 11], ids=["T4", "T7", "T11"])
+@pytest.mark.parametrize("T", [4, 7, pytest.param(11, marks=T11_BH_ONLY)], ids=["T4", "T7", "T11"])
 @pytest.mark.parametrize(
     "seq_len, p",
     [
@@ -289,7 +293,7 @@ def test_spec_multi_pos_matches_batched(device, T, seq_len, p):
     _check(device, T, p, seq_len)
 
 
-@pytest.mark.parametrize("T", [4, 7, 11], ids=["T4", "T7", "T11"])
+@pytest.mark.parametrize("T", [4, 7, pytest.param(11, marks=T11_BH_ONLY)], ids=["T4", "T7", "T11"])
 @pytest.mark.parametrize("seq_len, p", [(2048, 1024), (8192, 5000)], ids=["s2k", "s8k"])
 def test_spec_multi_pos_is_bit_exact(device, T, seq_len, p):
     """The sharpest form of the claim. With the reduction tree matched (SPEC_CONFIG) and the
@@ -316,6 +320,7 @@ def test_spec_multi_pos_long_context(device, T, p):
     _check(device, T, p, seq_len=32768)
 
 
+@T11_BH_ONLY
 @pytest.mark.parametrize("p", [30000, 32639], ids=["p30000", "p32639_straddle"])
 def test_spec_multi_pos_long_context_single_core(device, p):
     """T=11 at 32k. Only 1 core/head fits L1 at T=11 (see SPEC_CONFIG), so this run

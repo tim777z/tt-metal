@@ -915,6 +915,11 @@ ProgramDescriptor SdpaDecodeDeviceOperation::create_descriptor(
         .dst_full_sync_en = dst_full_sync_en,
         .math_approx_mode = math_approx_mode,
     };
+    // Spec mode instantiates the compute helpers with Sq_chunk_t == T > 1, which O3 unrolls into a
+    // binary that overflows the TENSIX kernel config buffer once LLK asserts are on. O2 is ~25% smaller.
+    if (spec_multi_pos) {
+        compute_desc.opt_level = tt::tt_metal::KernelBuildOptLevel::O2;
+    }
 
     // ========== Buffer Bindings for Runtime Args ==========
     // Every buffer address is passed as a Buffer* so it is auto-registered as a BufferBinding and
