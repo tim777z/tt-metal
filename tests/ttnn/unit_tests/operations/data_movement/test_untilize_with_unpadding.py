@@ -9,6 +9,7 @@ import pytest
 import torch
 import ttnn
 
+from models.common.utility_functions import is_slow_dispatch
 from tests.ttnn.utils_for_testing import assert_equal
 
 TTNN_TO_TORCH_DTYPE = {
@@ -1116,6 +1117,7 @@ def test_untilize_with_unpadding_zero_volume(shape, device):
 # The empty output is allocated, not filled: going through a host tensor would upload to the
 # device, and writes are rejected outright during trace capture
 # (fd_mesh_command_queue.cpp: "Writes are not supported during trace capture").
+@pytest.mark.skipif(is_slow_dispatch(), reason="trace capture is not supported in slow dispatch")
 def test_untilize_with_unpadding_zero_volume_in_trace_capture(device):
     torch_input = torch.rand((2, 3, 0), dtype=torch.bfloat16)
     tilized = ttnn.from_torch(torch_input, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
@@ -1225,3 +1227,25 @@ def test_untilize_with_unpadding_rank_0(device):
     result = ttnn.to_torch(untilized)
     assert result.shape == torch_input.shape
     assert_equal(result, torch_input)
+
+
+# device() is null for a host tensor and create_device_tensor dereferences it, so without a guard
+# the empty branch segfaults - where the normal path would have fallen through to the device
+# operation's validation error.
+@pytest.mark.parametrize("shape", [(0, 64), (2, 3, 0)])
+def test_untilize_zero_volume_host_tensor_is_rejected(shape, expect_error):
+    host_tensor = ttnn.from_torch(torch.rand(shape, dtype=torch.bfloat16), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+
+    with expect_error(RuntimeError, "must be allocated on a device"):
+        ttnn.untilize(host_tensor)
+
+
+# Unpadding only ever shrinks, so no output extent may exceed the padded input. Volume alone does
+# not catch that: [0, 64] with inclusive ends [0, UINT32_MAX] is zero-volume but shaped [1, 0].
+def test_untilize_with_unpadding_zero_volume_rejects_grown_extent(device, expect_error):
+    tilized = ttnn.from_torch(
+        torch.rand((0, 64), dtype=torch.bfloat16), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
+    )
+
+    with expect_error(RuntimeError, "exceeds the padded input extent"):
+        ttnn.untilize_with_unpadding(tilized, ttnn.Shape([0, 4294967295]))

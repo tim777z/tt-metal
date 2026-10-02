@@ -111,9 +111,16 @@ Tensor untilize_with_unpadding(
     // indices, so the produced extent is end + 1 per dim; for an empty dim that end is the uint32
     // wrap of 0 - 1, and + 1 returns it to 0.
     if (input_tensor.logical_volume() == 0) {
+        // device() is null for a host or unallocated tensor and create_device_tensor dereferences
+        // it, so say so here rather than segfaulting. The normal path reaches the device
+        // operation's own validation instead.
+        TT_FATAL(
+            input_tensor.device() != nullptr, "untilize_with_unpadding: input tensor must be allocated on a device");
+        // Built over the input's rank, matching the normalization above and the device operation's
+        // output spec; output_tensor_end may be longer, and taking its rank would grow an axis.
         ttsl::SmallVector<uint32_t> empty_shape;
-        empty_shape.reserve(output_tensor_end.rank());
-        for (size_t index = 0; index < output_tensor_end.rank(); ++index) {
+        empty_shape.reserve(input_shape.rank());
+        for (size_t index = 0; index < input_shape.rank(); ++index) {
             empty_shape.push_back(output_tensor_end[index] + 1);
         }
         const ttnn::Shape output_shape(std::move(empty_shape));
@@ -124,6 +131,17 @@ Tensor untilize_with_unpadding(
             output_shape.volume() == 0,
             "untilize_with_unpadding: a zero-volume input requires a zero-volume output, got {}",
             output_shape);
+        // Unpadding only ever shrinks, so no extent may exceed the padded input. Volume alone does
+        // not catch that: [0, 64] with ends [0, UINT32_MAX] is zero-volume but shaped [1, 0].
+        for (size_t index = 0; index < input_shape.rank(); ++index) {
+            TT_FATAL(
+                output_shape[index] <= input_tensor.padded_shape()[index],
+                "untilize_with_unpadding: output extent {} exceeds the padded input extent {} in "
+                "dimension {}",
+                output_shape[index],
+                input_tensor.padded_shape()[index],
+                index);
+        }
         // Allocated rather than filled: there is no element to initialise, and going through a host
         // tensor would upload to the device, which fails outright inside trace capture and drops the
         // input's mesh topology on the way. Carry that topology across instead.
