@@ -142,7 +142,7 @@ def _flush_subnormals_of_dtype(result: torch.Tensor) -> torch.Tensor:
     return torch.where(result.abs() < tiny, torch.zeros_like(result), result)
 
 
-def saturate_integer(result: torch.Tensor, data_format, torch_format) -> torch.Tensor:
+def saturate_integer(result: torch.Tensor, data_format: DataFormat) -> torch.Tensor:
     """Apply integer saturation during format conversion.
 
     Hardware saturates (clamps) values instead of wrapping on overflow.
@@ -151,6 +151,7 @@ def saturate_integer(result: torch.Tensor, data_format, torch_format) -> torch.T
 
     For a UInt8 destination, the packer drops the sign and keeps the magnitude.
     """
+    torch_format = format_dict[data_format]
     iinfo = torch.iinfo(torch_format)
     is_unsigned = str(data_format).startswith("U")
     if is_unsigned:
@@ -198,7 +199,7 @@ def apply_l1_accumulation(
     for partial in partials[1:]:
         if needs_saturation:
             wide = accumulated.to(torch.int64) + partial.to(torch.int64)
-            accumulated = saturate_integer(wide, data_format, format_dict[data_format])
+            accumulated = saturate_integer(wide, data_format)
         else:
             accumulated += partial
     return accumulated
@@ -1455,8 +1456,6 @@ class MatmulGolden(FidelityMasking):
         input_A_format: DataFormat = None,
         input_B_format: DataFormat = None,
     ):
-        torch_format = format_dict[data_format]
-
         M, K1, K2, N, _ = self._resolve_matmul_dimensions(
             input_A_dimensions, input_B_dimensions
         )
@@ -1467,7 +1466,6 @@ class MatmulGolden(FidelityMasking):
         res = saturate_integer(
             torch.matmul(t1.to(torch.int64), t2.to(torch.int64)).view(M * N),
             data_format,
-            torch_format,
         )
 
         if tilize:
@@ -1836,7 +1834,7 @@ class DataCopyGolden:
         # Ensure result is in correct format if not already
         if result.dtype != torch_format:
             if data_format.is_integer():
-                result = saturate_integer(result, data_format, torch_format)
+                result = saturate_integer(result, data_format)
             else:
                 result = result.to(torch_format)
 
@@ -1936,7 +1934,7 @@ class TypecastGolden:
         if output_format == DataFormat.Int32:
             # +1 on the min: hardware uses sign-magnitude representation.
             return torch.clamp(values, -(2**31 - 1), 2**31 - 1).to(out_torch)
-        return saturate_integer(values, output_format, out_torch)
+        return saturate_integer(values, output_format)
 
     @staticmethod
     def _to_float(values: torch.Tensor, output_format: DataFormat) -> torch.Tensor:
@@ -2005,7 +2003,7 @@ class PackGolden:
 
         if result.dtype != torch_format:
             if data_format.is_integer():
-                result = saturate_integer(result, data_format, torch_format)
+                result = saturate_integer(result, data_format)
             else:
                 result = result.to(torch_format)
 
@@ -3704,8 +3702,7 @@ class EltwiseBinaryGolden(FidelityMasking):
             result = quantize_mx_tensor_chunked(result, data_format)
         else:
             if data_format.is_integer():
-                torch_format = format_dict[data_format]
-                result = saturate_integer(result, data_format, torch_format)
+                result = saturate_integer(result, data_format)
             else:
                 result = to_tensor(result, data_format)
 
@@ -4468,7 +4465,7 @@ class ReduceGolden:
         elif data_format.is_mx_format():
             return quantize_mx_tensor_chunked(tensor.to(torch.bfloat16), data_format)
         elif data_format.is_integer():
-            return saturate_integer(tensor, data_format, format_dict[data_format])
+            return saturate_integer(tensor, data_format)
         else:
             return to_tensor(tensor, data_format)
 
@@ -4891,7 +4888,6 @@ class ReduceGapoolGolden(FidelityMasking):
         self, face_results, src_b, data_format, reduce_dim
     ):
         """Place pooled integer results in the output tile"""
-        torch_format = format_dict[data_format]
         face_shape = (FACE_DIM, FACE_DIM)
         f0, f1, f2, f3 = face_results
         result = torch.zeros(ELEMENTS_PER_TILE, dtype=torch.int64)
@@ -4916,7 +4912,7 @@ class ReduceGapoolGolden(FidelityMasking):
             pool_result = self._compute_gapool_integer(all_faces, src_b, num_faces=1)
             result[0] = pool_result[0][0]
 
-        return saturate_integer(result, data_format, torch_format)
+        return saturate_integer(result, data_format)
 
 
 @register_golden
