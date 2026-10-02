@@ -99,6 +99,26 @@
   team: runtime
   budget_type: profiler
 
+- name: Streaming profiler sync
+  cmd: run_streaming_profiler_sync
+  skus:
+    # Measures the chip-to-chip clock sync, so it needs a multi-chip Blackhole system.
+    bh_loudbox:
+      timeout: 15
+  owner_id: U03BJ1L3LUQ # Mo Memarian
+  team: runtime
+  budget_type: profiler
+
+- name: Streaming profiler fabric overhead
+  cmd: run_streaming_profiler_fabric_overhead
+  skus:
+    # Compares the fabric microbench with the profiler off and on, so it needs a multi-chip Blackhole system.
+    bh_loudbox:
+      timeout: 15
+  owner_id: U03BJ1L3LUQ # Mo Memarian
+  team: runtime
+  budget_type: profiler
+
 - name: Sync events profiler
   cmd: run_sync_events_test
   skus:

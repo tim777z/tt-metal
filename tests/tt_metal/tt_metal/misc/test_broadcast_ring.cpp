@@ -857,5 +857,91 @@ TEST(BroadcastRing, ConcurrentLockedSlotIntegrity) {
     EXPECT_GT(received.size(), 0u);
 }
 
+template <typename ChunkSlots>
+class BroadcastRingChunkSlots : public ::testing::Test {};
+using ChunkSlotCounts = ::testing::Types<std::integral_constant<size_t, 0>, std::integral_constant<size_t, 64>>;
+TYPED_TEST_SUITE(BroadcastRingChunkSlots, ChunkSlotCounts);
+
+TYPED_TEST(BroadcastRingChunkSlots, ReadAtCopiesHeldPositions) {
+    constexpr size_t kCapacity = size_t{1} << 14;
+    BroadcastRing<uint64_t, TypeParam::value> ring(kCapacity);
+    uint64_t value = 0;
+    EXPECT_FALSE(ring.read_at(0, value));
+
+    const uint64_t total = 5 * kCapacity + 3;
+    for (uint64_t i = 0; i < total; ++i) {
+        ring.writer().publish(i * 3);
+    }
+    EXPECT_EQ(ring.published(), total);
+    EXPECT_EQ(ring.oldest(), total - kCapacity);
+    EXPECT_FALSE(ring.read_at(ring.oldest() - 1, value));
+    EXPECT_FALSE(ring.read_at(total, value));
+    for (uint64_t i = ring.oldest(); i < total; ++i) {
+        ASSERT_TRUE(ring.read_at(i, value));
+        ASSERT_EQ(value, i * 3);
+    }
+}
+
+TYPED_TEST(BroadcastRingChunkSlots, ChunkedReadersSeeTheSameStream) {
+    constexpr uint64_t kReadEvery = 128;
+    BroadcastRing<uint64_t, TypeParam::value> ring(size_t{1} << 13);
+    auto reader = ring.make_reader();
+    std::array<uint64_t, 256> batch{};
+    uint64_t next = 0;
+    for (uint64_t i = 0; i < 3 * ring.capacity(); ++i) {
+        ring.writer().publish(i);
+        if (i % kReadEvery == kReadEvery - 1) {
+            for (const uint64_t value : reader.read_batch(std::span<uint64_t>(batch))) {
+                ASSERT_EQ(value, next++);
+            }
+        }
+    }
+    EXPECT_EQ(next, 3 * ring.capacity());
+    EXPECT_EQ(reader.dropped(), 0u);
+}
+
+TYPED_TEST(BroadcastRingChunkSlots, ConcurrentReadAtRacingOverwritesIsIntactOrRejected) {
+    constexpr size_t kCapacity = 256;
+    constexpr int kReaders = 4;
+    BroadcastRing<ProgramRealtimeRecord, TypeParam::value> ring(kCapacity);
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> accepted{0}, torn{0};
+    std::latch start{kReaders + 1};
+    std::vector<std::thread> readers;
+    for (int reader = 0; reader < kReaders; ++reader) {
+        readers.emplace_back([&, reader] {
+            std::mt19937_64 rng(kBatchSeed + reader);
+            ProgramRealtimeRecord record{};
+            start.arrive_and_wait();
+            while (!stop.load(std::memory_order_relaxed)) {
+                const uint64_t oldest = ring.oldest(), published = ring.published();
+                if (published == oldest) {
+                    continue;
+                }
+                const uint64_t position = oldest + rng() % (published - oldest);
+                if (!ring.read_at(position, record)) {
+                    continue;
+                }
+                if (record.runtime_id == position + 1 && seq_record_ok(record)) {
+                    accepted.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    torn.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+    start.arrive_and_wait();
+    constexpr uint32_t kTotalRecords = 1u << 21;
+    for (uint32_t seq = 0; seq < kTotalRecords; ++seq) {
+        ring.writer().publish(make_seq_record(seq));
+    }
+    stop.store(true, std::memory_order_relaxed);
+    for (auto& reader : readers) {
+        reader.join();
+    }
+    EXPECT_EQ(torn.load(), 0u);
+    EXPECT_GT(accepted.load(), 0u);
+}
+
 }  // namespace
 }  // namespace tt::tt_metal

@@ -97,7 +97,21 @@ run_streaming_profiler_test() {
     # Host-only unit tests first, then the on-device workload and Tracy capture.
     ./build/test/tt_metal/tools/profiler/test_streaming_profiler_decode
     ./build/test/tt_metal/tools/profiler/test_streaming_profiler_fetch
+    ./build/test/tt_metal/tools/profiler/test_streaming_profiler_sync_engine
     pytest tests/ttnn/tracy/test_streaming_profiler.py tests/ttnn/tracy/test_streaming_profiler_ops_csv.py
+}
+
+run_streaming_profiler_sync() {
+    remove_default_log_locations
+    # Needs two or more Blackhole chips; the gate skips itself on fewer.
+    pytest tests/ttnn/tracy/test_streaming_profiler_sync.py::test_streaming_profiler_sync_check
+}
+
+run_streaming_profiler_fabric_overhead() {
+    remove_default_log_locations
+    # Needs four or more Blackhole chips; the gate skips itself on fewer.
+    pytest tests/ttnn/tracy/test_streaming_profiler_sync.py::test_streaming_profiler_fabric_overhead \
+        tests/ttnn/tracy/test_streaming_profiler_sync.py::test_streaming_profiler_fabric_eth_zones
 }
 
 run_sync_events_test() {
@@ -115,6 +129,8 @@ run_profiling_test() {
     run_realtime_profiler_test
     run_accumulate_profiler_test
     run_streaming_profiler_test
+    run_streaming_profiler_sync
+    run_streaming_profiler_fabric_overhead
     run_sync_events_test
 }
 

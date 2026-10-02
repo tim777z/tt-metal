@@ -3,7 +3,9 @@ set(PROFILER_TEST_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/test_timestamped_events.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_streaming_profiler_decode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_streaming_profiler_fetch.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/streaming_profiler_sync/test_streaming_profiler_sync_engine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_sync_events.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/streaming_profiler_sync/test_streaming_profiler_sync_workloads.cpp
 )
 
 foreach(TEST_SRC ${PROFILER_TEST_SRCS})
@@ -29,3 +31,4 @@ foreach(TEST_SRC ${PROFILER_TEST_SRCS})
                 ${TEST_NAME}
     )
 endforeach()
+target_link_libraries(profiler_test_streaming_profiler_sync_engine PRIVATE gmock_main)
