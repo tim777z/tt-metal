@@ -10,6 +10,7 @@
 #include <tt-metalium/experimental/fabric/control_plane.hpp>
 #include <tt-metalium/device.hpp>
 #include "erisc_datamover_builder.hpp"
+#include "impl/streaming_profiler/sync/link_sync.hpp"
 #include "fabric/fabric_edm_packet_header.hpp"
 #include "tt_metal/fabric/hw/inc/edm_fabric/telemetry/code_profiling_types.hpp"
 #include "tt_metal/fabric/hw/inc/edm_fabric/fabric_trimming_types.hpp"
@@ -371,6 +372,9 @@ FabricEriscDatamoverConfig::FabricEriscDatamoverConfig(Topology topology) : topo
     // Channel Allocations
     this->max_l1_loading_size =
         tt::tt_metal::hal::get_erisc_l1_unreserved_size() + tt::tt_metal::hal::get_erisc_l1_unreserved_base();
+    if (const auto& mc = tt::tt_metal::MetalContext::instance(); tt::tt_metal::streaming_profiler::can_capture(mc)) {
+        this->max_l1_loading_size = tt::tt_metal::streaming_profiler::link_sync::l1_addr(mc.hal());
+    }
     auto buffer_region_start = (buffer_address + buffer_alignment) & ~(buffer_alignment - 1);  // Align
     auto available_channel_buffering_space = max_l1_loading_size - buffer_region_start;
     this->available_buffer_memory_regions.emplace_back(buffer_region_start, available_channel_buffering_space);
@@ -1324,6 +1328,18 @@ FabricEriscDatamoverBuilder::CompileTimeArgs FabricEriscDatamoverBuilder::get_co
 
     // --- Telemetry ---
     get_telemetry_compile_time_args(risc_id, named_args);
+
+    namespace link_sync = tt::tt_metal::streaming_profiler::link_sync;
+    if (auto& mc = tt::tt_metal::MetalContext::instance(); tt::tt_metal::streaming_profiler::can_capture(mc)) {
+        auto role = kernel_profiler::LinkSyncRole::None;
+        if (risc_id == 0) {
+            const auto chip =
+                mc.get_control_plane().get_physical_chip_id_from_fabric_node_id(this->local_fabric_node_id);
+            role = link_sync::role_of(mc, static_cast<uint32_t>(chip), this->my_eth_core_logical);
+        }
+        named_args["LINK_SYNC_ROLE"] = static_cast<uint32_t>(role);
+        named_args["LINK_SYNC_L1_ADDR"] = link_sync::l1_addr(mc.hal());
+    }
 
     // --- Multi-TXQ credit counters (always emitted; 0 when inactive) ---
     bool multi_txq_enabled = config.sender_txq_id != config.receiver_txq_id;
