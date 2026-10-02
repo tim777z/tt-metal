@@ -86,7 +86,7 @@ jobs:
           fi
 
           parts=()
-          [[ "$bh" == "true" ]]   && parts+=("bh_p100a_civ2_viommu" "bh_p150b_civ2_viommu")
+          [[ "$bh" == "true" ]]   && parts+=("bh_p100a_civ2_viommu" "bh_p150b_civ2_viommu" "bh_loudbox")
           [[ "$n300" == "true" ]] && parts+=("wh_n300_civ2")
           [[ "$n150" == "true" ]] && parts+=("wh_n150_civ2")
           sc_skus=$(IFS=,; echo "${parts[*]}")

@@ -59,7 +59,7 @@ jobs:
         run: |
           set -e
           parts=()
-          [[ "${{ inputs.run-blackhole-profiler }}" == "true" ]] && parts+=("bh_p100a_civ2_viommu" "bh_p150b_civ2_viommu")
+          [[ "${{ inputs.run-blackhole-profiler }}" == "true" ]] && parts+=("bh_p100a_civ2_viommu" "bh_p150b_civ2_viommu" "bh_loudbox")
           [[ "${{ inputs.run-n300-profiler }}" == "true" ]] && parts+=("wh_n300_civ2")
           [[ "${{ inputs.run-n150-profiler }}" == "true" ]] && parts+=("wh_n150_civ2")
           skus=$(IFS=,; echo "${parts[*]}")

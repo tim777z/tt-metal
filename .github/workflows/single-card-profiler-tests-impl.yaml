@@ -133,6 +133,10 @@ jobs:
           enable-watcher: ${{ inputs.enable-watcher }}
           enable-lightweight-kernel-asserts: ${{ inputs.enable-lightweight-kernel-asserts }}
           enable-llk-asserts: ${{ inputs.enable-llk-asserts }}
+      - name: Ensure BH links online
+        if: ${{ contains(matrix.test-group.sku, 'bh_loudbox') }}
+        uses: ./docker-job/.github/actions/ensure-bh-links-online
+        timeout-minutes: 10
       - name: ${{ matrix.test-group.name }}
         timeout-minutes: ${{ matrix.test-group.timeout }}
         env:
